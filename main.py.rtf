@@ -1,0 +1,569 @@
+{\rtf1\ansi\ansicpg1251\cocoartf2757
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 import os\
+import asyncio\
+import re\
+from aiogram import Bot, Dispatcher, F\
+from aiogram.filters import Command\
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery\
+from aiogram.fsm.storage.memory import MemoryStorage\
+from anthropic import Anthropic\
+import requests\
+import json\
+from datetime import datetime\
+\
+# \uc0\u1058 \u1086 \u1082 \u1077 \u1085 \u1099 \
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')\
+CLAUDE_API_KEY = os.getenv('CLAUDE_API_KEY')\
+WEEEK_TOKEN = os.getenv('WEEEK_API_TOKEN')\
+WEEEK_WORKSPACE_ID = os.getenv('WEEEK_WORKSPACE_ID')\
+WEEEK_BOARD_ID = os.getenv('WEEEK_BOARD_ID')\
+\
+# \uc0\u1048 \u1085 \u1080 \u1094 \u1080 \u1072 \u1083 \u1080 \u1079 \u1072 \u1094 \u1080 \u1103 \
+bot = Bot(token=TELEGRAM_TOKEN)\
+dp = Dispatcher(storage=MemoryStorage())\
+claude = Anthropic(api_key=CLAUDE_API_KEY)\
+\
+# \uc0\u1061 \u1088 \u1072 \u1085 \u1080 \u1083 \u1080 \u1097 \u1077 \
+user_messages = \{\}\
+user_tasks = \{\}\
+\
+# === \uc0\u1056 \u1040 \u1041 \u1054 \u1058 \u1040  \u1057  WEEEK ===\
+def create_task_in_weeek(task_data):\
+    """\uc0\u1057 \u1086 \u1079 \u1076 \u1072 \u1105 \u1090  \u1079 \u1072 \u1076 \u1072 \u1095 \u1091  \u1074  Weeek"""\
+    url = "https://api.weeek.net/public/v1/tm/tasks"\
+    \
+    headers = \{\
+        "Authorization": f"Bearer \{WEEEK_TOKEN\}",\
+        "Content-Type": "application/json"\
+    \}\
+    \
+    payload = \{\
+        "name": task_data.get("title", "\uc0\u1041 \u1077 \u1079  \u1085 \u1072 \u1079 \u1074 \u1072 \u1085 \u1080 \u1103 ")[:255],\
+        "description": task_data.get("description", ""),\
+        "workspaceId": int(WEEEK_WORKSPACE_ID),\
+        "boardId": int(WEEEK_BOARD_ID)\
+    \}\
+    \
+    if task_data.get("deadline"):\
+        payload["dueDate"] = task_data["deadline"]\
+    \
+    print(f"\uc0\u55357 \u56548  \u1054 \u1090 \u1087 \u1088 \u1072 \u1074 \u1082 \u1072  \u1074  Weeek: \{payload\}")\
+    \
+    try:\
+        response = requests.post(url, headers=headers, json=payload, timeout=10)\
+        print(f"\uc0\u55357 \u56549  \u1054 \u1090 \u1074 \u1077 \u1090  Weeek: \{response.status_code\} - \{response.text\}")\
+        \
+        if response.status_code in [200, 201]:\
+            return response.json()\
+        else:\
+            print(f"\uc0\u10060  \u1054 \u1096 \u1080 \u1073 \u1082 \u1072  Weeek: \{response.text\}")\
+            return None\
+    except Exception as e:\
+        print(f"\uc0\u10060  \u1048 \u1089 \u1082 \u1083 \u1102 \u1095 \u1077 \u1085 \u1080 \u1077 : \{e\}")\
+        return None\
+\
+# === \uc0\u1056 \u1040 \u1041 \u1054 \u1058 \u1040  \u1057  CLAUDE (\u1048 \u1057 \u1055 \u1056 \u1040 \u1042 \u1051 \u1045 \u1053 \u1053 \u1040 \u1071  \u1052 \u1054 \u1044 \u1045 \u1051 \u1068 ) ===\
+def analyze_with_claude(text, context="task"):\
+    """\uc0\u1040 \u1085 \u1072 \u1083 \u1080 \u1079 \u1080 \u1088 \u1091 \u1077 \u1090  \u1090 \u1077 \u1082 \u1089 \u1090  \u1095 \u1077 \u1088 \u1077 \u1079  Claude"""\
+    \
+    if context == "task":\
+        prompt = f"""\uc0\u1058 \u1099  - \u1072 \u1089 \u1089 \u1080 \u1089 \u1090 \u1077 \u1085 \u1090  \u1087 \u1086  \u1091 \u1087 \u1088 \u1072 \u1074 \u1083 \u1077 \u1085 \u1080 \u1102  \u1079 \u1072 \u1076 \u1072 \u1095 \u1072 \u1084 \u1080 .\
+\
+\uc0\u1055 \u1088 \u1086 \u1072 \u1085 \u1072 \u1083 \u1080 \u1079 \u1080 \u1088 \u1091 \u1081  \u1090 \u1077 \u1082 \u1089 \u1090  \u1087 \u1086 \u1083 \u1100 \u1079 \u1086 \u1074 \u1072 \u1090 \u1077 \u1083 \u1103  \u1080  \u1080 \u1079 \u1074 \u1083 \u1077 \u1082 \u1080  \u1079 \u1072 \u1076 \u1072 \u1095 \u1091 .\
+\
+\uc0\u1042 \u1040 \u1046 \u1053 \u1054 : \u1042 \u1077 \u1088 \u1085 \u1080  \u1058 \u1054 \u1051 \u1068 \u1050 \u1054  \u1074 \u1072 \u1083 \u1080 \u1076 \u1085 \u1099 \u1081  JSON \u1073 \u1077 \u1079  \u1083 \u1102 \u1073 \u1086 \u1075 \u1086  \u1076 \u1086 \u1087 \u1086 \u1083 \u1085 \u1080 \u1090 \u1077 \u1083 \u1100 \u1085 \u1086 \u1075 \u1086  \u1090 \u1077 \u1082 \u1089 \u1090 \u1072 , markdown \u1080 \u1083 \u1080  \u1082 \u1086 \u1084 \u1084 \u1077 \u1085 \u1090 \u1072 \u1088 \u1080 \u1077 \u1074 .\
+\
+\uc0\u1060 \u1086 \u1088 \u1084 \u1072 \u1090  \u1086 \u1090 \u1074 \u1077 \u1090 \u1072 :\
+\{\{\
+  "title": "\uc0\u1050 \u1088 \u1072 \u1090 \u1082 \u1086 \u1077  \u1085 \u1072 \u1079 \u1074 \u1072 \u1085 \u1080 \u1077  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080  (\u1076 \u1086  50 \u1089 \u1080 \u1084 \u1074 \u1086 \u1083 \u1086 \u1074 )",\
+  "description": "\uc0\u1055 \u1086 \u1076 \u1088 \u1086 \u1073 \u1085 \u1086 \u1077  \u1086 \u1087 \u1080 \u1089 \u1072 \u1085 \u1080 \u1077 ",\
+  "category": "SMM",\
+  "priority": "\uc0\u1057 \u1088 \u1086 \u1095 \u1085 \u1086 ",\
+  "deadline": null\
+\}\}\
+\
+\uc0\u1050 \u1072 \u1090 \u1077 \u1075 \u1086 \u1088 \u1080 \u1080 : SMM, \u1052 \u1072 \u1088 \u1082 \u1077 \u1090 \u1080 \u1085 \u1075 , \u1055 \u1088 \u1086 \u1076 \u1072 \u1078 \u1080 , \u1040 \u1085 \u1072 \u1083 \u1080 \u1090 \u1080 \u1082 \u1072 , \u1051 \u1080 \u1095 \u1085 \u1086 \u1077 \
+\uc0\u1055 \u1088 \u1080 \u1086 \u1088 \u1080 \u1090 \u1077 \u1090 \u1099 : \u1050 \u1088 \u1080 \u1090 \u1080 \u1095 \u1085 \u1086 , \u1057 \u1088 \u1086 \u1095 \u1085 \u1086 , \u1042 \u1072 \u1078 \u1085 \u1086 , \u1052 \u1086 \u1078 \u1085 \u1086  \u1086 \u1090 \u1083 \u1086 \u1078 \u1080 \u1090 \u1100 \
+\
+\uc0\u1058 \u1077 \u1082 \u1089 \u1090  \u1087 \u1086 \u1083 \u1100 \u1079 \u1086 \u1074 \u1072 \u1090 \u1077 \u1083 \u1103 :\
+\{text\}"""\
+\
+    elif context == "meeting":\
+        prompt = f"""\uc0\u1058 \u1099  - \u1072 \u1089 \u1089 \u1080 \u1089 \u1090 \u1077 \u1085 \u1090  \u1087 \u1086  \u1072 \u1085 \u1072 \u1083 \u1080 \u1079 \u1091  \u1087 \u1083 \u1072 \u1085 \u1105 \u1088 \u1086 \u1082 .\
+\
+\uc0\u1055 \u1088 \u1086 \u1072 \u1085 \u1072 \u1083 \u1080 \u1079 \u1080 \u1088 \u1091 \u1081  \u1090 \u1088 \u1072 \u1085 \u1089 \u1082 \u1088 \u1080 \u1087 \u1094 \u1080 \u1102  \u1080  \u1080 \u1079 \u1074 \u1083 \u1077 \u1082 \u1080  \u1042 \u1057 \u1045  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080 .\
+\
+\uc0\u1042 \u1040 \u1046 \u1053 \u1054 : \u1042 \u1077 \u1088 \u1085 \u1080  \u1058 \u1054 \u1051 \u1068 \u1050 \u1054  \u1074 \u1072 \u1083 \u1080 \u1076 \u1085 \u1099 \u1081  JSON.\
+\
+\uc0\u1060 \u1086 \u1088 \u1084 \u1072 \u1090 :\
+\{\{\
+  "tasks": [\
+    \{\{\
+      "title": "\uc0\u1053 \u1072 \u1079 \u1074 \u1072 \u1085 \u1080 \u1077 ",\
+      "description": "\uc0\u1054 \u1087 \u1080 \u1089 \u1072 \u1085 \u1080 \u1077  \u1089  \u1094 \u1080 \u1090 \u1072 \u1090 \u1086 \u1081 ",\
+      "category": "SMM",\
+      "priority": "\uc0\u1057 \u1088 \u1086 \u1095 \u1085 \u1086 ",\
+      "deadline": null,\
+      "assignee": null\
+    \}\}\
+  ]\
+\}\}\
+\
+\uc0\u1058 \u1088 \u1072 \u1085 \u1089 \u1082 \u1088 \u1080 \u1087 \u1094 \u1080 \u1103 :\
+\{text\}"""\
+    \
+    elif context == "ai_help":\
+        prompt = f"""\uc0\u1058 \u1099  - AI-\u1087 \u1086 \u1084 \u1086 \u1097 \u1085 \u1080 \u1082  \u1076 \u1083 \u1103  \u1074 \u1099 \u1087 \u1086 \u1083 \u1085 \u1077 \u1085 \u1080 \u1103  \u1079 \u1072 \u1076 \u1072 \u1095 .\
+\
+\{text\}\
+\
+\uc0\u1044 \u1072 \u1081  \u1082 \u1086 \u1085 \u1082 \u1088 \u1077 \u1090 \u1085 \u1099 \u1081  \u1087 \u1086 \u1096 \u1072 \u1075 \u1086 \u1074 \u1099 \u1081  \u1087 \u1083 \u1072 \u1085  \u1076 \u1077 \u1081 \u1089 \u1090 \u1074 \u1080 \u1081 ."""\
+    \
+    try:\
+        message = claude.messages.create(\
+            model="claude-3-5-haiku-20241022",  # \uc0\u8592  \u1048 \u1057 \u1055 \u1056 \u1040 \u1042 \u1051 \u1045 \u1053 \u1040  \u1052 \u1054 \u1044 \u1045 \u1051 \u1068 !\
+            max_tokens=4000,\
+            messages=[\{"role": "user", "content": prompt\}]\
+        )\
+        \
+        response_text = message.content[0].text.strip()\
+        \
+        print(f"\uc0\u55358 \u56598  Claude RAW \u1086 \u1090 \u1074 \u1077 \u1090 : \{response_text[:300]\}...")\
+        \
+        if context == "ai_help":\
+            return response_text\
+        \
+        # \uc0\u1059 \u1073 \u1080 \u1088 \u1072 \u1077 \u1084  markdown\
+        response_text = response_text.replace("```json", "")\
+        response_text = response_text.replace("```", "")\
+        response_text = response_text.strip()\
+        \
+        # \uc0\u1048 \u1097 \u1077 \u1084  JSON\
+        json_match = re.search(r'\\\{.*\\\}', response_text, re.DOTALL)\
+        \
+        if json_match:\
+            json_str = json_match.group(0)\
+            print(f"\uc0\u55357 \u56550  Extracted JSON: \{json_str[:200]\}...")\
+            return json.loads(json_str)\
+        else:\
+            print(f"\uc0\u10060  \u1053 \u1077  \u1085 \u1072 \u1081 \u1076 \u1077 \u1085  JSON \u1074  \u1086 \u1090 \u1074 \u1077 \u1090 \u1077 ")\
+            return None\
+        \
+    except json.JSONDecodeError as e:\
+        print(f"\uc0\u10060  \u1054 \u1096 \u1080 \u1073 \u1082 \u1072  \u1087 \u1072 \u1088 \u1089 \u1080 \u1085 \u1075 \u1072  JSON: \{e\}")\
+        print(f"\uc0\u1058 \u1077 \u1082 \u1089 \u1090  \u1086 \u1090 \u1074 \u1077 \u1090 \u1072 : \{response_text[:500]\}")\
+        \
+        # \uc0\u1057 \u1086 \u1079 \u1076 \u1072 \u1105 \u1084  \u1079 \u1072 \u1076 \u1072 \u1095 \u1091  \u1074 \u1088 \u1091 \u1095 \u1085 \u1091 \u1102 \
+        return \{\
+            "title": text[:50],\
+            "description": text,\
+            "category": "\uc0\u1051 \u1080 \u1095 \u1085 \u1086 \u1077 ",\
+            "priority": "\uc0\u1042 \u1072 \u1078 \u1085 \u1086 ",\
+            "deadline": None\
+        \}\
+        \
+    except Exception as e:\
+        print(f"\uc0\u10060  \u1054 \u1096 \u1080 \u1073 \u1082 \u1072  Claude API: \{e\}")\
+        return None\
+\
+# === \uc0\u1050 \u1054 \u1052 \u1040 \u1053 \u1044 \u1067  ===\
+@dp.message(Command("start"))\
+async def cmd_start(message: Message):\
+    await message.answer(\
+        "\uc0\u55357 \u56395  \u1055 \u1088 \u1080 \u1074 \u1077 \u1090 ! \u1071  \u1090 \u1074 \u1086 \u1081  AI-\u1072 \u1089 \u1089 \u1080 \u1089 \u1090 \u1077 \u1085 \u1090 !\\n\\n"\
+        "\uc0\u55357 \u56541  **\u1057 \u1086 \u1079 \u1076 \u1072 \u1085 \u1080 \u1077  \u1079 \u1072 \u1076 \u1072 \u1095 :**\\n"\
+        "\'95 \uc0\u1053 \u1072 \u1087 \u1080 \u1096 \u1080  \u1090 \u1077 \u1082 \u1089 \u1090  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080 \\n"\
+        "\'95 \uc0\u1054 \u1090 \u1087 \u1088 \u1072 \u1074 \u1100  \u1075 \u1086 \u1083 \u1086 \u1089 \u1086 \u1074 \u1086 \u1077 \\n"\
+        "\'95 \uc0\u1054 \u1090 \u1087 \u1088 \u1072 \u1074 \u1100  \u1092 \u1072 \u1081 \u1083  \u1087 \u1083 \u1072 \u1085 \u1105 \u1088 \u1082 \u1080 \\n\\n"\
+        "\uc0\u55358 \u56598  **AI-\u1087 \u1086 \u1084 \u1086 \u1097 \u1085 \u1080 \u1082 :**\\n"\
+        "\'95 /help - \uc0\u1087 \u1086 \u1084 \u1086 \u1097 \u1100 \\n"\
+        "\'95 \uc0\u1055 \u1088 \u1086 \u1089 \u1090 \u1086  \u1089 \u1087 \u1088 \u1086 \u1089 \u1080 !\\n\\n"\
+        "\uc0\u55357 \u56523  /tasks - \u1089 \u1087 \u1080 \u1089 \u1086 \u1082  \u1079 \u1072 \u1076 \u1072 \u1095 "\
+    )\
+\
+@dp.message(Command("help"))\
+async def cmd_help_command(message: Message):\
+    await message.answer(\
+        "\uc0\u55358 \u56598  **\u1050 \u1072 \u1082  \u1103  \u1088 \u1072 \u1073 \u1086 \u1090 \u1072 \u1102 :**\\n\\n"\
+        "**1. \uc0\u1057 \u1086 \u1079 \u1076 \u1072 \u1085 \u1080 \u1077  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080 :**\\n"\
+        "\uc0\u1053 \u1072 \u1087 \u1080 \u1096 \u1080  \u1095 \u1090 \u1086  \u1085 \u1091 \u1078 \u1085 \u1086  \u1089 \u1076 \u1077 \u1083 \u1072 \u1090 \u1100 \\n\\n"\
+        "**2. \uc0\u1053 \u1077 \u1089 \u1082 \u1086 \u1083 \u1100 \u1082 \u1086  \u1089 \u1086 \u1086 \u1073 \u1097 \u1077 \u1085 \u1080 \u1081 :**\\n"\
+        "\uc0\u1055 \u1080 \u1096 \u1080  \u1087 \u1086 \u1076 \u1088 \u1103 \u1076  - \u1103  \u1089 \u1087 \u1088 \u1086 \u1096 \u1091 \\n\\n"\
+        "**3. \uc0\u1055 \u1083 \u1072 \u1085 \u1105 \u1088 \u1082 \u1072 :**\\n"\
+        "\uc0\u1054 \u1090 \u1087 \u1088 \u1072 \u1074 \u1100  \u1092 \u1072 \u1081 \u1083  \u1090 \u1088 \u1072 \u1085 \u1089 \u1082 \u1088 \u1080 \u1087 \u1094 \u1080 \u1080 \\n\\n"\
+        "**4. AI-\uc0\u1087 \u1086 \u1084 \u1086 \u1097 \u1085 \u1080 \u1082 :**\\n"\
+        "\uc0\u1057 \u1087 \u1088 \u1086 \u1089 \u1080 : '\u1050 \u1072 \u1082  \u1089 \u1076 \u1077 \u1083 \u1072 \u1090 \u1100  X?'"\
+    )\
+\
+@dp.message(Command("tasks"))\
+async def cmd_tasks(message: Message):\
+    user_id = message.from_user.id\
+    \
+    if user_id not in user_tasks or not user_tasks[user_id]:\
+        await message.answer("\uc0\u55357 \u56523  \u1059  \u1090 \u1077 \u1073 \u1103  \u1087 \u1086 \u1082 \u1072  \u1085 \u1077 \u1090  \u1079 \u1072 \u1076 \u1072 \u1095 !")\
+        return\
+    \
+    tasks = user_tasks[user_id]\
+    response = f"\uc0\u55357 \u56523  **\u1058 \u1074 \u1086 \u1080  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080  (\{len(tasks)\}):**\\n\\n"\
+    \
+    for i, task in enumerate(tasks, 1):\
+        priority_emoji = \{\
+            "\uc0\u1050 \u1088 \u1080 \u1090 \u1080 \u1095 \u1085 \u1086 ": "\u55357 \u56613 ",\
+            "\uc0\u1057 \u1088 \u1086 \u1095 \u1085 \u1086 ": "\u55357 \u56628 ",\
+            "\uc0\u1042 \u1072 \u1078 \u1085 \u1086 ": "\u55357 \u57313 ",\
+            "\uc0\u1052 \u1086 \u1078 \u1085 \u1086  \u1086 \u1090 \u1083 \u1086 \u1078 \u1080 \u1090 \u1100 ": "\u55357 \u57314 "\
+        \}\
+        emoji = priority_emoji.get(task.get('priority', ''), '\uc0\u55357 \u56523 ')\
+        response += f"\{i\}. \{emoji\} \{task['title']\}\\n"\
+    \
+    await message.answer(response)\
+\
+# === \uc0\u1054 \u1041 \u1056 \u1040 \u1041 \u1054 \u1058 \u1050 \u1040  \u1058 \u1045 \u1050 \u1057 \u1058 \u1040  ===\
+@dp.message(F.text & ~F.text.startswith('/'))\
+async def handle_text(message: Message):\
+    user_id = message.from_user.id\
+    text = message.text\
+    \
+    # AI-\uc0\u1087 \u1086 \u1084 \u1086 \u1097 \u1085 \u1080 \u1082 ?\
+    ai_triggers = ["\uc0\u1082 \u1072 \u1082 ", "\u1087 \u1086 \u1084 \u1086 \u1075 \u1080 ", "\u1087 \u1086 \u1076 \u1089 \u1082 \u1072 \u1078 \u1080 ", "\u1095 \u1090 \u1086  \u1076 \u1077 \u1083 \u1072 \u1090 \u1100 ", "\u1082 \u1072 \u1082  \u1089 \u1076 \u1077 \u1083 \u1072 \u1090 \u1100 ", "\u1085 \u1091 \u1078 \u1085 \u1072  \u1087 \u1086 \u1084 \u1086 \u1097 \u1100 "]\
+    if any(trigger in text.lower() for trigger in ai_triggers):\
+        await handle_ai_help(message, text)\
+        return\
+    \
+    # \uc0\u1047 \u1072 \u1076 \u1072 \u1095 \u1072 \
+    if user_id not in user_messages:\
+        user_messages[user_id] = []\
+    \
+    user_messages[user_id].append(\{\
+        "text": text,\
+        "time": datetime.now()\
+    \})\
+    \
+    recent = [m for m in user_messages[user_id] \
+              if (datetime.now() - m["time"]).total_seconds() < 60]\
+    \
+    if len(recent) > 1:\
+        combined = "\\n".join([m["text"] for m in recent])\
+        \
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[\
+            [InlineKeyboardButton(text="\uc0\u9989  \u1044 \u1072 , \u1086 \u1076 \u1085 \u1072  \u1079 \u1072 \u1076 \u1072 \u1095 \u1072 ", callback_data="merge_yes")],\
+            [InlineKeyboardButton(text="\uc0\u10060  \u1053 \u1077 \u1090 , \u1086 \u1090 \u1076 \u1077 \u1083 \u1100 \u1085 \u1099 \u1077 ", callback_data="merge_no")]\
+        ])\
+        \
+        await message.answer(\
+            f"\uc0\u55357 \u56541  \u1042 \u1080 \u1078 \u1091  \{len(recent)\} \u1089 \u1086 \u1086 \u1073 \u1097 \u1077 \u1085 \u1080 \u1081  \u1079 \u1072  \u1084 \u1080 \u1085 \u1091 \u1090 \u1091 .\\n\\n"\
+            f"\uc0\u1054 \u1073 \u1098 \u1077 \u1076 \u1080 \u1085 \u1080 \u1090 \u1100  \u1074  \u1086 \u1076 \u1085 \u1091  \u1079 \u1072 \u1076 \u1072 \u1095 \u1091 ?\\n\\n"\
+            f"\uc0\u1058 \u1077 \u1082 \u1089 \u1090 :\\n\{combined[:300]\}\{'...' if len(combined) > 300 else ''\}",\
+            reply_markup=keyboard\
+        )\
+    else:\
+        await process_single_task(message, text)\
+\
+# === AI-\uc0\u1055 \u1054 \u1052 \u1054 \u1065 \u1053 \u1048 \u1050  ===\
+async def handle_ai_help(message: Message, question: str):\
+    """AI-\uc0\u1087 \u1086 \u1084 \u1086 \u1097 \u1085 \u1080 \u1082 """\
+    await message.answer("\uc0\u55358 \u56598  \u1044 \u1091 \u1084 \u1072 \u1102 ...")\
+    \
+    user_id = message.from_user.id\
+    context = ""\
+    \
+    if user_id in user_tasks and user_tasks[user_id]:\
+        last_task = user_tasks[user_id][-1]\
+        context = f"\\n\uc0\u1050 \u1086 \u1085 \u1090 \u1077 \u1082 \u1089 \u1090  \u1087 \u1086 \u1089 \u1083 \u1077 \u1076 \u1085 \u1077 \u1081  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080 :\\n\{last_task['title']\}\\n\{last_task['description']\}"\
+    \
+    full_prompt = f"\{question\}\{context\}"\
+    \
+    ai_response = analyze_with_claude(full_prompt, context="ai_help")\
+    \
+    if ai_response:\
+        await message.answer(f"\uc0\u55357 \u56481  **AI-\u1087 \u1086 \u1084 \u1086 \u1097 \u1085 \u1080 \u1082 :**\\n\\n\{ai_response\}")\
+    else:\
+        await message.answer("\uc0\u10060  \u1053 \u1077  \u1089 \u1084 \u1086 \u1075  \u1086 \u1073 \u1088 \u1072 \u1073 \u1086 \u1090 \u1072 \u1090 \u1100  \u1079 \u1072 \u1087 \u1088 \u1086 \u1089 ")\
+\
+# === \uc0\u1054 \u1041 \u1056 \u1040 \u1041 \u1054 \u1058 \u1050 \u1040  \u1047 \u1040 \u1044 \u1040 \u1063 \u1048  ===\
+async def process_single_task(message: Message, text: str):\
+    """\uc0\u1054 \u1073 \u1088 \u1072 \u1073 \u1086 \u1090 \u1082 \u1072  \u1086 \u1076 \u1085 \u1086 \u1081  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080 """\
+    status_msg = await message.answer("\uc0\u55358 \u56598  \u1040 \u1085 \u1072 \u1083 \u1080 \u1079 \u1080 \u1088 \u1091 \u1102  \u1079 \u1072 \u1076 \u1072 \u1095 \u1091 ...")\
+    \
+    task_data = analyze_with_claude(text, context="task")\
+    \
+    if not task_data:\
+        await status_msg.edit_text("\uc0\u10060  \u1053 \u1077  \u1091 \u1076 \u1072 \u1083 \u1086 \u1089 \u1100  \u1086 \u1073 \u1088 \u1072 \u1073 \u1086 \u1090 \u1072 \u1090 \u1100 . \u1055 \u1086 \u1087 \u1088 \u1086 \u1073 \u1091 \u1081 \u1090 \u1077  \u1087 \u1077 \u1088 \u1077 \u1092 \u1086 \u1088 \u1084 \u1091 \u1083 \u1080 \u1088 \u1086 \u1074 \u1072 \u1090 \u1100 .")\
+        return\
+    \
+    user_id = message.from_user.id\
+    if user_id not in user_tasks:\
+        user_tasks[user_id] = []\
+    user_tasks[user_id].append(task_data)\
+    \
+    priority_emoji = \{\
+        "\uc0\u1050 \u1088 \u1080 \u1090 \u1080 \u1095 \u1085 \u1086 ": "\u55357 \u56613 ",\
+        "\uc0\u1057 \u1088 \u1086 \u1095 \u1085 \u1086 ": "\u55357 \u56628 ",\
+        "\uc0\u1042 \u1072 \u1078 \u1085 \u1086 ": "\u55357 \u57313 ",\
+        "\uc0\u1052 \u1086 \u1078 \u1085 \u1086  \u1086 \u1090 \u1083 \u1086 \u1078 \u1080 \u1090 \u1100 ": "\u55357 \u57314 "\
+    \}\
+    \
+    response = (\
+        f"\{priority_emoji.get(task_data['priority'], '\uc0\u55357 \u56523 ')\} **\{task_data['title']\}**\\n\\n"\
+        f"\uc0\u55357 \u56541  \{task_data['description']\}\\n\\n"\
+        f"\uc0\u55357 \u56513  \u1050 \u1072 \u1090 \u1077 \u1075 \u1086 \u1088 \u1080 \u1103 : \{task_data['category']\}\\n"\
+        f"\uc0\u9200  \u1055 \u1088 \u1080 \u1086 \u1088 \u1080 \u1090 \u1077 \u1090 : \{task_data['priority']\}\\n"\
+    )\
+    \
+    if task_data.get('deadline'):\
+        response += f"\uc0\u55357 \u56517  \u1044 \u1077 \u1076 \u1083 \u1072 \u1081 \u1085 : \{task_data['deadline']\}\\n"\
+    \
+    response += "\\n\uc0\u9989  \u1057 \u1086 \u1079 \u1076 \u1072 \u1090 \u1100  \u1079 \u1072 \u1076 \u1072 \u1095 \u1091  \u1074  Weeek?"\
+    \
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[\
+        [InlineKeyboardButton(text="\uc0\u9989  \u1057 \u1086 \u1079 \u1076 \u1072 \u1090 \u1100  \u1074  Weeek", callback_data=f"create_task")],\
+        [InlineKeyboardButton(text="\uc0\u55357 \u56481  \u1053 \u1091 \u1078 \u1085 \u1072  \u1087 \u1086 \u1084 \u1086 \u1097 \u1100 ", callback_data=f"help_task")],\
+        [InlineKeyboardButton(text="\uc0\u10060  \u1054 \u1090 \u1084 \u1077 \u1085 \u1072 ", callback_data="cancel")]\
+    ])\
+    \
+    await status_msg.edit_text(response, reply_markup=keyboard)\
+\
+# === \uc0\u1043 \u1054 \u1051 \u1054 \u1057 \u1054 \u1042 \u1067 \u1045  ===\
+@dp.message(F.voice)\
+async def handle_voice(message: Message):\
+    """\uc0\u1054 \u1073 \u1088 \u1072 \u1073 \u1086 \u1090 \u1082 \u1072  \u1075 \u1086 \u1083 \u1086 \u1089 \u1086 \u1074 \u1099 \u1093 """\
+    if message.caption:\
+        await message.answer("\uc0\u55356 \u57252  \u1055 \u1086 \u1083 \u1091 \u1095 \u1080 \u1083  \u1088 \u1072 \u1089 \u1096 \u1080 \u1092 \u1088 \u1086 \u1074 \u1082 \u1091 !")\
+        await process_single_task(message, message.caption)\
+    else:\
+        await message.answer(\
+            "\uc0\u55356 \u57252  \u1043 \u1086 \u1083 \u1086 \u1089 \u1086 \u1074 \u1086 \u1077  \u1087 \u1086 \u1083 \u1091 \u1095 \u1077 \u1085 \u1086 !\\n\\n"\
+            "\uc0\u9888 \u65039  Telegram \u1085 \u1077  \u1088 \u1072 \u1089 \u1096 \u1080 \u1092 \u1088 \u1086 \u1074 \u1072 \u1083 .\\n\\n"\
+            "\uc0\u1055 \u1086 \u1087 \u1088 \u1086 \u1073 \u1091 \u1081 :\\n"\
+            "1. \uc0\u1055 \u1077 \u1088 \u1077 \u1089 \u1083 \u1072 \u1090 \u1100  @voicy_bot\\n"\
+            "2. \uc0\u1057 \u1082 \u1086 \u1087 \u1080 \u1088 \u1086 \u1074 \u1072 \u1090 \u1100  \u1090 \u1077 \u1082 \u1089 \u1090 \\n"\
+            "3. \uc0\u1055 \u1088 \u1080 \u1089 \u1083 \u1072 \u1090 \u1100  \u1084 \u1085 \u1077 "\
+        )\
+\
+# === \uc0\u1044 \u1054 \u1050 \u1059 \u1052 \u1045 \u1053 \u1058 \u1067  ===\
+@dp.message(F.document)\
+async def handle_document(message: Message):\
+    """\uc0\u1054 \u1073 \u1088 \u1072 \u1073 \u1086 \u1090 \u1082 \u1072  \u1092 \u1072 \u1081 \u1083 \u1086 \u1074 """\
+    doc = message.document\
+    \
+    if not doc.file_name.endswith(('.txt', '.vtt', '.srt')):\
+        await message.answer("\uc0\u10060  \u1058 \u1086 \u1083 \u1100 \u1082 \u1086  .txt, .vtt, .srt")\
+        return\
+    \
+    status_msg = await message.answer("\uc0\u55357 \u56516  \u1040 \u1085 \u1072 \u1083 \u1080 \u1079 \u1080 \u1088 \u1091 \u1102  \u1087 \u1083 \u1072 \u1085 \u1105 \u1088 \u1082 \u1091 ...")\
+    \
+    try:\
+        file = await bot.get_file(doc.file_id)\
+        file_content = await bot.download_file(file.file_path)\
+        text = file_content.read().decode('utf-8')\
+        \
+        await status_msg.edit_text("\uc0\u55358 \u56598  Claude \u1072 \u1085 \u1072 \u1083 \u1080 \u1079 \u1080 \u1088 \u1091 \u1077 \u1090 ...")\
+        \
+        result = analyze_with_claude(text, context="meeting")\
+        \
+        if not result or 'tasks' not in result:\
+            await status_msg.edit_text("\uc0\u10060  \u1053 \u1077  \u1091 \u1076 \u1072 \u1083 \u1086 \u1089 \u1100  \u1080 \u1079 \u1074 \u1083 \u1077 \u1095 \u1100  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080 ")\
+            return\
+        \
+        tasks = result['tasks']\
+        \
+        user_id = message.from_user.id\
+        if user_id not in user_tasks:\
+            user_tasks[user_id] = []\
+        user_tasks[user_id].extend(tasks)\
+        \
+        response = f"\uc0\u9989  \u1040 \u1085 \u1072 \u1083 \u1080 \u1079  \u1079 \u1072 \u1074 \u1077 \u1088 \u1096 \u1105 \u1085 !\\n\\n\u55357 \u56522  **\u1053 \u1072 \u1081 \u1076 \u1077 \u1085 \u1086  \u1079 \u1072 \u1076 \u1072 \u1095 : \{len(tasks)\}**\\n\\n"\
+        \
+        for i, task in enumerate(tasks, 1):\
+            priority_emoji = \{\
+                "\uc0\u1050 \u1088 \u1080 \u1090 \u1080 \u1095 \u1085 \u1086 ": "\u55357 \u56613 ",\
+                "\uc0\u1057 \u1088 \u1086 \u1095 \u1085 \u1086 ": "\u55357 \u56628 ",\
+                "\uc0\u1042 \u1072 \u1078 \u1085 \u1086 ": "\u55357 \u57313 ",\
+                "\uc0\u1052 \u1086 \u1078 \u1085 \u1086  \u1086 \u1090 \u1083 \u1086 \u1078 \u1080 \u1090 \u1100 ": "\u55357 \u57314 "\
+            \}\
+            emoji = priority_emoji.get(task['priority'], '\uc0\u55357 \u56523 ')\
+            response += f"\{i\}. \{emoji\} [\{task['category']\}] \{task['title']\}\\n"\
+        \
+        response += "\\n\uc0\u9989  \u1057 \u1086 \u1079 \u1076 \u1072 \u1090 \u1100  \u1074 \u1089 \u1077  \u1079 \u1072 \u1076 \u1072 \u1095 \u1080 ?"\
+        \
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[\
+            [InlineKeyboardButton(text="\uc0\u9989  \u1057 \u1086 \u1079 \u1076 \u1072 \u1090 \u1100  \u1074 \u1089 \u1077 ", callback_data=f"create_all")],\
+            [InlineKeyboardButton(text="\uc0\u55357 \u56523  \u1055 \u1086 \u1082 \u1072 \u1079 \u1072 \u1090 \u1100  \u1076 \u1077 \u1090 \u1072 \u1083 \u1080 ", callback_data=f"show_details")],\
+            [InlineKeyboardButton(text="\uc0\u10060  \u1054 \u1090 \u1084 \u1077 \u1085 \u1072 ", callback_data="cancel")]\
+        ])\
+        \
+        await status_msg.edit_text(response, reply_markup=keyboard)\
+        \
+    except Exception as e:\
+        await status_msg.edit_text(f"\uc0\u10060  \u1054 \u1096 \u1080 \u1073 \u1082 \u1072 : \{str(e)\}")\
+        print(f"\uc0\u1054 \u1096 \u1080 \u1073 \u1082 \u1072  \u1076 \u1086 \u1082 \u1091 \u1084 \u1077 \u1085 \u1090 \u1072 : \{e\}")\
+\
+# === \uc0\u1050 \u1053 \u1054 \u1055 \u1050 \u1048  ===\
+@dp.callback_query(F.data == "merge_yes")\
+async def handle_merge_yes(callback: CallbackQuery):\
+    await callback.answer()\
+    \
+    user_id = callback.from_user.id\
+    recent = [m for m in user_messages.get(user_id, []) \
+              if (datetime.now() - m["time"]).total_seconds() < 60]\
+    \
+    combined_text = "\\n".join([m["text"] for m in recent])\
+    \
+    await callback.message.edit_text("\uc0\u55358 \u56598  \u1054 \u1073 \u1098 \u1077 \u1076 \u1080 \u1085 \u1103 \u1102 ...")\
+    await process_single_task(callback.message, combined_text)\
+    \
+    user_messages[user_id] = []\
+\
+@dp.callback_query(F.data == "merge_no")\
+async def handle_merge_no(callback: CallbackQuery):\
+    await callback.answer()\
+    await callback.message.edit_text("\uc0\u9989  \u1061 \u1086 \u1088 \u1086 \u1096 \u1086 ")\
+\
+@dp.callback_query(F.data == "create_task")\
+async def handle_create_task(callback: CallbackQuery):\
+    await callback.answer()\
+    \
+    user_id = callback.from_user.id\
+    \
+    if user_id not in user_tasks or not user_tasks[user_id]:\
+        await callback.message.edit_text("\uc0\u10060  \u1047 \u1072 \u1076 \u1072 \u1095 \u1072  \u1085 \u1077  \u1085 \u1072 \u1081 \u1076 \u1077 \u1085 \u1072 ")\
+        return\
+    \
+    task_data = user_tasks[user_id][-1]\
+    \
+    await callback.message.edit_text("\uc0\u55358 \u56598  \u1057 \u1086 \u1079 \u1076 \u1072 \u1102  \u1074  Weeek...")\
+    \
+    result = create_task_in_weeek(task_data)\
+    \
+    if result:\
+        await callback.message.edit_text(\
+            f"\uc0\u55356 \u57225  **\u1047 \u1072 \u1076 \u1072 \u1095 \u1072  \u1089 \u1086 \u1079 \u1076 \u1072 \u1085 \u1072 !**\\n\\n"\
+            f"\uc0\u55357 \u56523  \{task_data['title']\}\\n\\n"\
+            f"\uc0\u55357 \u56522  \u1054 \u1090 \u1082 \u1088 \u1099 \u1090 \u1100 :\\n"\
+            f"https://app.weeek.net/ws/\{WEEEK_WORKSPACE_ID\}/project/1/board/\{WEEEK_BOARD_ID\}"\
+        )\
+    else:\
+        await callback.message.edit_text(\
+            f"\uc0\u10060  \u1054 \u1096 \u1080 \u1073 \u1082 \u1072  \u1089 \u1086 \u1079 \u1076 \u1072 \u1085 \u1080 \u1103 \\n\\n"\
+            f"\uc0\u1055 \u1088 \u1086 \u1074 \u1077 \u1088 \u1100 \u1090 \u1077 :\\n"\
+            f"\'95 API \uc0\u1090 \u1086 \u1082 \u1077 \u1085  Weeek\\n"\
+            f"\'95 ID \uc0\u1087 \u1088 \u1086 \u1089 \u1090 \u1088 \u1072 \u1085 \u1089 \u1090 \u1074 \u1072 \\n"\
+            f"\'95 ID \uc0\u1076 \u1086 \u1089 \u1082 \u1080 "\
+        )\
+\
+@dp.callback_query(F.data == "create_all")\
+async def handle_create_all(callback: CallbackQuery):\
+    await callback.answer()\
+    \
+    user_id = callback.from_user.id\
+    \
+    if user_id not in user_tasks or not user_tasks[user_id]:\
+        await callback.message.edit_text("\uc0\u10060  \u1047 \u1072 \u1076 \u1072 \u1095 \u1080  \u1085 \u1077  \u1085 \u1072 \u1081 \u1076 \u1077 \u1085 \u1099 ")\
+        return\
+    \
+    tasks = user_tasks[user_id]\
+    \
+    await callback.message.edit_text(f"\uc0\u55358 \u56598  \u1057 \u1086 \u1079 \u1076 \u1072 \u1102  \{len(tasks)\} \u1079 \u1072 \u1076 \u1072 \u1095 ...")\
+    \
+    created = 0\
+    failed = 0\
+    \
+    for task in tasks:\
+        result = create_task_in_weeek(task)\
+        if result:\
+            created += 1\
+        else:\
+            failed += 1\
+    \
+    await callback.message.edit_text(\
+        f"\uc0\u55356 \u57225  **\u1043 \u1086 \u1090 \u1086 \u1074 \u1086 !**\\n\\n"\
+        f"\uc0\u9989  \u1057 \u1086 \u1079 \u1076 \u1072 \u1085 \u1086 : \{created\}\\n"\
+        f"\uc0\u10060  \u1054 \u1096 \u1080 \u1073 \u1086 \u1082 : \{failed\}\\n\\n"\
+        f"\uc0\u55357 \u56522  \u1054 \u1090 \u1082 \u1088 \u1099 \u1090 \u1100 :\\n"\
+        f"https://app.weeek.net/ws/\{WEEEK_WORKSPACE_ID\}/project/1/board/\{WEEEK_BOARD_ID\}"\
+    )\
+\
+@dp.callback_query(F.data == "help_task")\
+async def handle_help_task(callback: CallbackQuery):\
+    await callback.answer()\
+    \
+    user_id = callback.from_user.id\
+    \
+    if user_id not in user_tasks or not user_tasks[user_id]:\
+        await callback.message.edit_text("\uc0\u10060  \u1047 \u1072 \u1076 \u1072 \u1095 \u1072  \u1085 \u1077  \u1085 \u1072 \u1081 \u1076 \u1077 \u1085 \u1072 ")\
+        return\
+    \
+    task = user_tasks[user_id][-1]\
+    \
+    await callback.message.edit_text("\uc0\u55358 \u56598  \u1044 \u1091 \u1084 \u1072 \u1102 ...")\
+    \
+    prompt = f"\uc0\u1055 \u1086 \u1084 \u1086 \u1075 \u1080  \u1074 \u1099 \u1087 \u1086 \u1083 \u1085 \u1080 \u1090 \u1100 :\\n\\n\{task['title']\}\\n\\n\{task['description']\}\\n\\n\u1044 \u1072 \u1081  \u1087 \u1083 \u1072 \u1085  \u1076 \u1077 \u1081 \u1089 \u1090 \u1074 \u1080 \u1081 "\
+    \
+    ai_response = analyze_with_claude(prompt, context="ai_help")\
+    \
+    if ai_response:\
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[\
+            [InlineKeyboardButton(text="\uc0\u9989  \u1057 \u1086 \u1079 \u1076 \u1072 \u1090 \u1100  \u1074  Weeek", callback_data="create_task")],\
+            [InlineKeyboardButton(text="\uc0\u10060  \u1054 \u1090 \u1084 \u1077 \u1085 \u1072 ", callback_data="cancel")]\
+        ])\
+        \
+        await callback.message.edit_text(\
+            f"\uc0\u55357 \u56481  **AI-\u1087 \u1086 \u1084 \u1086 \u1097 \u1085 \u1080 \u1082 :**\\n\\n\{ai_response\}",\
+            reply_markup=keyboard\
+        )\
+    else:\
+        await callback.message.edit_text("\uc0\u10060  \u1053 \u1077  \u1089 \u1084 \u1086 \u1075  \u1087 \u1086 \u1084 \u1086 \u1095 \u1100 ")\
+\
+@dp.callback_query(F.data == "show_details")\
+async def handle_show_details(callback: CallbackQuery):\
+    await callback.answer()\
+    \
+    user_id = callback.from_user.id\
+    \
+    if user_id not in user_tasks or not user_tasks[user_id]:\
+        await callback.message.edit_text("\uc0\u10060  \u1047 \u1072 \u1076 \u1072 \u1095 \u1080  \u1085 \u1077  \u1085 \u1072 \u1081 \u1076 \u1077 \u1085 \u1099 ")\
+        return\
+    \
+    tasks = user_tasks[user_id]\
+    response = f"\uc0\u55357 \u56523  **\u1044 \u1077 \u1090 \u1072 \u1083 \u1080  (\{len(tasks)\}):**\\n\\n"\
+    \
+    for i, task in enumerate(tasks, 1):\
+        response += f"\{i\}. **\{task['title']\}**\\n"\
+        response += f"   \uc0\u55357 \u56541  \{task['description'][:100]\}...\\n"\
+        response += f"   \uc0\u55357 \u56513  \{task['category']\} | \u9200  \{task['priority']\}\\n\\n"\
+    \
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[\
+        [InlineKeyboardButton(text="\uc0\u9989  \u1057 \u1086 \u1079 \u1076 \u1072 \u1090 \u1100  \u1074 \u1089 \u1077 ", callback_data="create_all")],\
+        [InlineKeyboardButton(text="\uc0\u10060  \u1054 \u1090 \u1084 \u1077 \u1085 \u1072 ", callback_data="cancel")]\
+    ])\
+    \
+    await callback.message.edit_text(response, reply_markup=keyboard)\
+\
+@dp.callback_query(F.data == "cancel")\
+async def handle_cancel(callback: CallbackQuery):\
+    await callback.answer()\
+    await callback.message.edit_text("\uc0\u10060  \u1054 \u1090 \u1084 \u1077 \u1085 \u1077 \u1085 \u1086 ")\
+\
+# === \uc0\u1047 \u1040 \u1055 \u1059 \u1057 \u1050  ===\
+async def main():\
+    print("=" * 50)\
+    print("\uc0\u55358 \u56598  AI-\u1040 \u1057 \u1057 \u1048 \u1057 \u1058 \u1045 \u1053 \u1058  \u1047 \u1040 \u1055 \u1059 \u1065 \u1045 \u1053 !")\
+    print("=" * 50)\
+    print(f"\uc0\u9989  Telegram: \{'OK' if TELEGRAM_TOKEN else '\u10060  \u1053 \u1045 \u1058 '\}")\
+    print(f"\uc0\u9989  Claude: \{'OK' if CLAUDE_API_KEY else '\u10060  \u1053 \u1045 \u1058 '\}")\
+    print(f"\uc0\u9989  Weeek: \{'OK' if WEEEK_TOKEN else '\u10060  \u1053 \u1045 \u1058 '\}")\
+    print(f"\uc0\u9989  Workspace: \{WEEEK_WORKSPACE_ID\}")\
+    print(f"\uc0\u9989  Board: \{WEEEK_BOARD_ID\}")\
+    print(f"\uc0\u9989  Model: claude-3-5-haiku-20241022")\
+    print("=" * 50)\
+    \
+    await dp.start_polling(bot)\
+\
+if __name__ == "__main__":\
+    asyncio.run(main())}
